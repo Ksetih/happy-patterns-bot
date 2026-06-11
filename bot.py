@@ -62,16 +62,9 @@ def clear_user_state(user_id):
 
 def actions_keyboard(allow_more=True):
     buttons = []
-
     if allow_more:
-        buttons.append(
-            InlineKeyboardButton("➕ Добавить ещё", callback_data="add_more")
-        )
-
-    buttons.append(
-        InlineKeyboardButton("➡️ Следующий вопрос", callback_data="next")
-    )
-
+        buttons.append(InlineKeyboardButton("➕ Добавить ещё", callback_data="add_more"))
+    buttons.append(InlineKeyboardButton("➡️ Следующий вопрос", callback_data="next"))
     return InlineKeyboardMarkup([buttons])
 
 
@@ -243,7 +236,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     answer = update.message.text.strip()
-
     if not answer:
         return
 
@@ -283,15 +275,12 @@ async def handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = state["step"]
 
     if query.data == "add_more":
-        set_user_state(user_id, state)
-
         if step == "good":
             await query.message.reply_text("😊 Что ещё хорошего произошло сегодня?")
         elif step == "anxiety":
             await query.message.reply_text("😟 Что ещё тревожило или расстраивало?")
         elif step == "goals":
             await query.message.reply_text("🎯 Что ещё сделала для важных целей?")
-
         return
 
     if query.data == "next":
