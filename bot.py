@@ -32,8 +32,9 @@ TEXTS = {
         "saved_one": "Записала ✅",
         "max_saved": "Записала 3 пункта ✅",
         "score": "⭐ Оцени день от 1 до 10.",
-        "saved_all": "✨ Запись сохранена!",
         "start_today": "Напиши /today, чтобы сделать запись.",
+        "history_stub": "📅 История появится в следующей версии.",
+        "stats_stub": "📊 Статистика появится в следующей версии.",
     },
     "en": {
         "choose_lang": "Choose language / Выбери язык:",
@@ -46,8 +47,9 @@ TEXTS = {
         "saved_one": "Saved ✅",
         "max_saved": "Saved 3 items ✅",
         "score": "⭐ Rate your day from 1 to 10.",
-        "saved_all": "✨ Entry saved!",
         "start_today": "Send /today to make an entry.",
+        "history_stub": "📅 History will appear in the next version.",
+        "stats_stub": "📊 Stats will appear in the next version.",
     },
 }
 
@@ -68,6 +70,23 @@ def score_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(str(i), callback_data=f"score_{i}") for i in range(1, 6)],
         [InlineKeyboardButton(str(i), callback_data=f"score_{i}") for i in range(6, 11)],
+    ])
+
+
+def final_keyboard(lang: str):
+    if lang == "ru":
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📅 История", callback_data="history"),
+                InlineKeyboardButton("📊 Статистика", callback_data="stats"),
+            ]
+        ])
+
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📅 History", callback_data="history"),
+            InlineKeyboardButton("📊 Stats", callback_data="stats"),
+        ]
     ])
 
 
@@ -115,7 +134,6 @@ async def choose_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = query.from_user.id
     lang = query.data.replace("lang_", "")
-
     USER_LANG[user_id] = lang
 
     await query.edit_message_text(TEXTS[lang]["lang_saved"])
@@ -128,7 +146,6 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     USER_STATE[user_id] = {
         "step": "good",
         "data": {"good": [], "anxiety": [], "goals": [], "score": None},
-        "waiting_for_text": True,
     }
 
     await update.message.reply_text(TEXTS[lang]["good"])
@@ -228,27 +245,58 @@ async def handle_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data=state["data"],
     )
 
+    data = state["data"]
     USER_STATE.pop(user_id, None)
 
-    data = state["data"]
-    summary = (
-        f"{TEXTS[lang]['saved_all']}\n\n"
-        f"😊 {len(data['good'])}\n"
-        f"😟 {len(data['anxiety'])}\n"
-        f"🎯 {len(data['goals'])}\n"
-        f"⭐ {score}/10"
-    )
+    if lang == "ru":
+        summary = (
+            "✨ Запись сохранена!\n\n"
+            "Сегодня:\n\n"
+            f"😊 Хорошее — {len(data['good'])} пункт(а)\n"
+            f"😟 Тревоги — {len(data['anxiety'])} пункт(а)\n"
+            f"🎯 Цели — {len(data['goals'])} пункт(а)\n\n"
+            f"Оценка дня: {score}/10"
+        )
+    else:
+        summary = (
+            "✨ Entry saved!\n\n"
+            "Today:\n\n"
+            f"😊 Good things — {len(data['good'])}\n"
+            f"😟 Anxieties — {len(data['anxiety'])}\n"
+            f"🎯 Goals — {len(data['goals'])}\n\n"
+            f"Day rating: {score}/10"
+        )
 
-    await query.message.reply_text(summary)
+    await query.message.reply_text(summary, reply_markup=final_keyboard(lang))
+
+
+async def handle_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    lang = get_lang(query.from_user.id)
+    await query.message.reply_text(TEXTS[lang]["history_stub"])
+
+
+async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    lang = get_lang(query.from_user.id)
+    await query.message.reply_text(TEXTS[lang]["stats_stub"])
 
 
 app = Application.builder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("today", today))
+
 app.add_handler(CallbackQueryHandler(choose_language, pattern="^lang_"))
 app.add_handler(CallbackQueryHandler(handle_score, pattern="^score_"))
 app.add_handler(CallbackQueryHandler(handle_action, pattern="^(add_more|next)$"))
+app.add_handler(CallbackQueryHandler(handle_history, pattern="^history$"))
+app.add_handler(CallbackQueryHandler(handle_stats, pattern="^stats$"))
+
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
 app.run_polling()
