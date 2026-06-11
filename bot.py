@@ -13,7 +13,9 @@ from telegram.ext import (
 )
 
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
-CSV_FILE = "entries.csv"
+
+USERS_FILE = "users.csv"
+ENTRIES_FILE = "entries.csv"
 
 USER_LANG = {}
 USER_STATE = {}
@@ -22,43 +24,83 @@ BLOCKS = ["good", "anxiety", "goals"]
 
 TEXTS = {
     "ru": {
-        "choose_lang": "Выбери язык / Choose language:",
+        "choose_lang": "Выбери язык:",
         "lang_saved": "Готово, язык сохранён 🇷🇺\n\nНапиши /today, чтобы сделать запись.",
+        "start_today": "Напиши /today, чтобы сделать запись.",
         "good": "😊 Что хорошего произошло сегодня?",
         "anxiety": "😟 Что сегодня тревожило или расстраивало?",
         "goals": "🎯 Что сегодня сделала для важных целей?",
+        "score": "⭐ Оцени день от 1 до 10.",
         "add_more": "➕ Добавить ещё",
         "next": "➡️ Следующий вопрос",
         "saved_one": "Записала ✅",
         "max_saved": "Записала 3 пункта ✅",
-        "score": "⭐ Оцени день от 1 до 10.",
-        "start_today": "Напиши /today, чтобы сделать запись.",
         "history_stub": "📅 История появится в следующей версии.",
         "stats_stub": "📊 Статистика появится в следующей версии.",
     },
     "en": {
-        "choose_lang": "Choose language / Выбери язык:",
+        "choose_lang": "Choose language:",
         "lang_saved": "Done, language saved 🇬🇧\n\nSend /today to make an entry.",
+        "start_today": "Send /today to make an entry.",
         "good": "😊 What good happened today?",
         "anxiety": "😟 What made you anxious or upset today?",
         "goals": "🎯 What did you do for your important goals today?",
+        "score": "⭐ Rate your day from 1 to 10.",
         "add_more": "➕ Add more",
         "next": "➡️ Next question",
         "saved_one": "Saved ✅",
         "max_saved": "Saved 3 items ✅",
-        "score": "⭐ Rate your day from 1 to 10.",
-        "start_today": "Send /today to make an entry.",
         "history_stub": "📅 History will appear in the next version.",
         "stats_stub": "📊 Stats will appear in the next version.",
     },
 }
 
 
+def load_users():
+    if not os.path.exists(USERS_FILE):
+        return
+
+    with open(USERS_FILE, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            USER_LANG[int(row["user_id"])] = row["language"]
+
+
+def save_user_lang(user_id: int, lang: str):
+    USER_LANG[user_id] = lang
+
+    rows = []
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+
+    updated = False
+    for row in rows:
+        if int(row["user_id"]) == user_id:
+            row["language"] = lang
+            updated = True
+
+    if not updated:
+        rows.append({"user_id": str(user_id), "language": lang})
+
+    with open(USERS_FILE, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["user_id", "language"])
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def get_lang(user_id: int) -> str:
     return USER_LANG.get(user_id, "en")
 
 
-def actions_keyboard(lang: str, allow_more: bool = True):
+def lang_keyboard():
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🇬🇧 English", callback_data="lang_en"),
+        InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
+    ]])
+
+
+def actions_keyboard(lang: str, allow_more: bool):
     buttons = []
     if allow_more:
         buttons.append(InlineKeyboardButton(TEXTS[lang]["add_more"], callback_data="add_more"))
@@ -75,26 +117,21 @@ def score_keyboard():
 
 def final_keyboard(lang: str):
     if lang == "ru":
-        return InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("📅 История", callback_data="history"),
-                InlineKeyboardButton("📊 Статистика", callback_data="stats"),
-            ]
-        ])
-
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("📅 History", callback_data="history"),
-            InlineKeyboardButton("📊 Stats", callback_data="stats"),
-        ]
-    ])
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton("📅 История", callback_data="history"),
+            InlineKeyboardButton("📊 Статистика", callback_data="stats"),
+        ]])
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("📅 History", callback_data="history"),
+        InlineKeyboardButton("📊 Stats", callback_data="stats"),
+    ]])
 
 
 def save_entry(user_id: int, username: str, lang: str, data: dict):
-    file_exists = os.path.exists(CSV_FILE)
+    file_exists = os.path.exists(ENTRIES_FILE)
     created_at = datetime.utcnow().isoformat()
 
-    with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
+    with open(ENTRIES_FILE, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
 
         if not file_exists:
@@ -112,19 +149,14 @@ def save_entry(user_id: int, username: str, lang: str, data: dict):
 
         writer.writerow([
             created_at, user_id, username or "", lang,
-            "score", 1, "", data.get("score", "")
+            "score", 1, "", data.get("score")
         ])
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🇬🇧 English", callback_data="lang_en"),
-        InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
-    ]])
-
     await update.message.reply_text(
-        TEXTS["en"]["choose_lang"],
-        reply_markup=keyboard,
+        "Choose language / Выбери язык:",
+        reply_markup=lang_keyboard(),
     )
 
 
@@ -134,7 +166,8 @@ async def choose_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = query.from_user.id
     lang = query.data.replace("lang_", "")
-    USER_LANG[user_id] = lang
+
+    save_user_lang(user_id, lang)
 
     await query.edit_message_text(TEXTS[lang]["lang_saved"])
 
@@ -198,14 +231,13 @@ async def handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(TEXTS[lang]["start_today"])
         return
 
-    action = query.data
     step = state["step"]
 
-    if action == "add_more":
+    if query.data == "add_more":
         await query.message.reply_text(TEXTS[lang][step])
         return
 
-    if action == "next":
+    if query.data == "next":
         if step == "good":
             state["step"] = "anxiety"
             await query.message.reply_text(TEXTS[lang]["anxiety"])
@@ -238,12 +270,7 @@ async def handle_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
     score = int(query.data.replace("score_", ""))
     state["data"]["score"] = score
 
-    save_entry(
-        user_id=user_id,
-        username=user.username,
-        lang=lang,
-        data=state["data"],
-    )
+    save_entry(user_id, user.username, lang, state["data"])
 
     data = state["data"]
     USER_STATE.pop(user_id, None)
@@ -273,7 +300,6 @@ async def handle_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     lang = get_lang(query.from_user.id)
     await query.message.reply_text(TEXTS[lang]["history_stub"])
 
@@ -281,10 +307,11 @@ async def handle_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     lang = get_lang(query.from_user.id)
     await query.message.reply_text(TEXTS[lang]["stats_stub"])
 
+
+load_users()
 
 app = Application.builder().token(TOKEN).build()
 
