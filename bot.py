@@ -27,8 +27,11 @@ def load_state():
     if not os.path.exists(STATE_FILE):
         return {}
 
-    with open(STATE_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
 
 def save_state(state):
@@ -39,25 +42,36 @@ def save_state(state):
 USER_STATE = load_state()
 
 
+def user_key(user_id):
+    return str(user_id)
+
+
 def get_user_state(user_id):
-    return USER_STATE.get(str(user_id))
+    return USER_STATE.get(user_key(user_id))
 
 
 def set_user_state(user_id, state):
-    USER_STATE[str(user_id)] = state
+    USER_STATE[user_key(user_id)] = state
     save_state(USER_STATE)
 
 
 def clear_user_state(user_id):
-    USER_STATE.pop(str(user_id), None)
+    USER_STATE.pop(user_key(user_id), None)
     save_state(USER_STATE)
 
 
 def actions_keyboard(allow_more=True):
     buttons = []
+
     if allow_more:
-        buttons.append(InlineKeyboardButton("➕ Добавить ещё", callback_data="add_more"))
-    buttons.append(InlineKeyboardButton("➡️ Следующий вопрос", callback_data="next"))
+        buttons.append(
+            InlineKeyboardButton("➕ Добавить ещё", callback_data="add_more")
+        )
+
+    buttons.append(
+        InlineKeyboardButton("➡️ Следующий вопрос", callback_data="next")
+    )
+
     return InlineKeyboardMarkup([buttons])
 
 
@@ -84,20 +98,35 @@ def save_entry(user, data):
 
         if not file_exists:
             writer.writerow([
-                "created_at", "user_id", "username",
-                "block", "answer_index", "answer", "day_score"
+                "created_at",
+                "user_id",
+                "username",
+                "block",
+                "answer_index",
+                "answer",
+                "day_score",
             ])
 
         for block in BLOCKS:
             for idx, answer in enumerate(data.get(block, []), start=1):
                 writer.writerow([
-                    created_at, user.id, user.username or "",
-                    block, idx, answer, ""
+                    created_at,
+                    user.id,
+                    user.username or "",
+                    block,
+                    idx,
+                    answer,
+                    "",
                 ])
 
         writer.writerow([
-            created_at, user.id, user.username or "",
-            "score", 1, "", data.get("score")
+            created_at,
+            user.id,
+            user.username or "",
+            "score",
+            1,
+            "",
+            data.get("score"),
         ])
 
 
@@ -126,15 +155,13 @@ def get_admin_stats():
             total_rows += 1
             users.add(row["user_id"])
 
-            block = row["block"]
-
-            if block == "score":
+            if row["block"] == "score":
                 completed_entries += 1
-            elif block == "good":
+            elif row["block"] == "good":
                 good_rows += 1
-            elif block == "anxiety":
+            elif row["block"] == "anxiety":
                 anxiety_rows += 1
-            elif block == "goals":
+            elif row["block"] == "goals":
                 goals_rows += 1
 
     return {
@@ -165,7 +192,7 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "anxiety": [],
             "goals": [],
             "score": None,
-        }
+        },
     }
 
     set_user_state(user_id, state)
@@ -173,10 +200,13 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("😊 Что хорошего произошло сегодня?")
 
 
-async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    clear_user_state(update.effective_user.id)
+    await update.message.reply_text("Сбросила текущую запись. Можно начать заново: /today")
 
-    if user_id != ADMIN_ID:
+
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("Команда недоступна.")
         return
 
@@ -196,6 +226,7 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
+
     state = get_user_state(user_id)
 
     if not state:
@@ -205,10 +236,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = state["step"]
 
     if step not in BLOCKS:
-        await update.message.reply_text("⭐ Оцени день от 1 до 10.", reply_markup=score_keyboard())
+        await update.message.reply_text(
+            "⭐ Оцени день от 1 до 10.",
+            reply_markup=score_keyboard(),
+        )
         return
 
     answer = update.message.text.strip()
+
     if not answer:
         return
 
@@ -233,6 +268,11 @@ async def handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
     user_id = query.from_user.id
     state = get_user_state(user_id)
 
@@ -243,12 +283,15 @@ async def handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = state["step"]
 
     if query.data == "add_more":
+        set_user_state(user_id, state)
+
         if step == "good":
             await query.message.reply_text("😊 Что ещё хорошего произошло сегодня?")
         elif step == "anxiety":
             await query.message.reply_text("😟 Что ещё тревожило или расстраивало?")
         elif step == "goals":
             await query.message.reply_text("🎯 Что ещё сделала для важных целей?")
+
         return
 
     if query.data == "next":
@@ -267,7 +310,10 @@ async def handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if step == "goals":
             state["step"] = "score"
             set_user_state(user_id, state)
-            await query.message.reply_text("⭐ Оцени день от 1 до 10.", reply_markup=score_keyboard())
+            await query.message.reply_text(
+                "⭐ Оцени день от 1 до 10.",
+                reply_markup=score_keyboard(),
+            )
             return
 
 
@@ -275,8 +321,14 @@ async def handle_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
     user = query.from_user
     user_id = user.id
+
     state = get_user_state(user_id)
 
     if not state:
@@ -284,8 +336,8 @@ async def handle_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     score = int(query.data.replace("score_", ""))
-    state["data"]["score"] = score
 
+    state["data"]["score"] = score
     save_entry(user, state["data"])
 
     data = state["data"]
@@ -308,12 +360,14 @@ async def handle_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
     await query.message.reply_text("📅 Скоро здесь появится история твоих записей ✨")
 
 
 async def handle_joymap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
     await query.message.reply_text(
         "🗺 Чтобы увидеть первые закономерности, нужно минимум 3 дня записей 🌱"
     )
@@ -323,6 +377,7 @@ app = Application.builder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("today", today))
+app.add_handler(CommandHandler("reset", reset))
 app.add_handler(CommandHandler("admin", admin))
 
 app.add_handler(CallbackQueryHandler(handle_score, pattern="^score_"))
