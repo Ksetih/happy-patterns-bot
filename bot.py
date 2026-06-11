@@ -13,19 +13,14 @@ from telegram.ext import (
 )
 
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
-
-USERS_FILE = "users.csv"
 ENTRIES_FILE = "entries.csv"
 
-USER_LANG = {}
 USER_STATE = {}
-
 BLOCKS = ["good", "anxiety", "goals"]
 
 TEXTS = {
     "ru": {
-        "choose_lang": "Выбери язык:",
-        "lang_saved": "Готово, язык сохранён 🇷🇺\n\nНапиши /today, чтобы сделать запись.",
+        "start": "Привет! Я JoyMap 🌱\n\nНапиши /today, чтобы сделать запись.",
         "start_today": "Напиши /today, чтобы сделать запись.",
         "good": "😊 Что хорошего произошло сегодня?",
         "anxiety": "😟 Что сегодня тревожило или расстраивало?",
@@ -39,8 +34,7 @@ TEXTS = {
         "stats_stub": "📊 Статистика появится в следующей версии.",
     },
     "en": {
-        "choose_lang": "Choose language:",
-        "lang_saved": "Done, language saved 🇬🇧\n\nSend /today to make an entry.",
+        "start": "Hi! I'm JoyMap 🌱\n\nSend /today to make an entry.",
         "start_today": "Send /today to make an entry.",
         "good": "😊 What good happened today?",
         "anxiety": "😟 What made you anxious or upset today?",
@@ -56,48 +50,11 @@ TEXTS = {
 }
 
 
-def load_users():
-    if not os.path.exists(USERS_FILE):
-        return
-
-    with open(USERS_FILE, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            USER_LANG[int(row["user_id"])] = row["language"]
-
-
-def save_user_lang(user_id: int, lang: str):
-    USER_LANG[user_id] = lang
-
-    rows = []
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, "r", encoding="utf-8") as f:
-            rows = list(csv.DictReader(f))
-
-    updated = False
-    for row in rows:
-        if int(row["user_id"]) == user_id:
-            row["language"] = lang
-            updated = True
-
-    if not updated:
-        rows.append({"user_id": str(user_id), "language": lang})
-
-    with open(USERS_FILE, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["user_id", "language"])
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def get_lang(user_id: int) -> str:
-    return USER_LANG.get(user_id, "en")
-
-
-def lang_keyboard():
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🇬🇧 English", callback_data="lang_en"),
-        InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
-    ]])
+def get_lang(user) -> str:
+    code = getattr(user, "language_code", "") or ""
+    if code.lower().startswith("ru"):
+        return "ru"
+    return "en"
 
 
 def actions_keyboard(lang: str, allow_more: bool):
@@ -154,27 +111,13 @@ def save_entry(user_id: int, username: str, lang: str, data: dict):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Choose language / Выбери язык:",
-        reply_markup=lang_keyboard(),
-    )
-
-
-async def choose_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    user_id = query.from_user.id
-    lang = query.data.replace("lang_", "")
-
-    save_user_lang(user_id, lang)
-
-    await query.edit_message_text(TEXTS[lang]["lang_saved"])
+    lang = get_lang(update.effective_user)
+    await update.message.reply_text(TEXTS[lang]["start"])
 
 
 async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    lang = get_lang(user_id)
+    lang = get_lang(update.effective_user)
 
     USER_STATE[user_id] = {
         "step": "good",
@@ -187,7 +130,7 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-    lang = get_lang(user_id)
+    lang = get_lang(user)
 
     state = USER_STATE.get(user_id)
     if not state:
@@ -223,10 +166,11 @@ async def handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    user_id = query.from_user.id
-    lang = get_lang(user_id)
-    state = USER_STATE.get(user_id)
+    user = query.from_user
+    user_id = user.id
+    lang = get_lang(user)
 
+    state = USER_STATE.get(user_id)
     if not state:
         await query.message.reply_text(TEXTS[lang]["start_today"])
         return
@@ -260,9 +204,9 @@ async def handle_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = query.from_user
     user_id = user.id
-    lang = get_lang(user_id)
-    state = USER_STATE.get(user_id)
+    lang = get_lang(user)
 
+    state = USER_STATE.get(user_id)
     if not state:
         await query.message.reply_text(TEXTS[lang]["start_today"])
         return
@@ -300,25 +244,22 @@ async def handle_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    lang = get_lang(query.from_user.id)
+    lang = get_lang(query.from_user)
     await query.message.reply_text(TEXTS[lang]["history_stub"])
 
 
 async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    lang = get_lang(query.from_user.id)
+    lang = get_lang(query.from_user)
     await query.message.reply_text(TEXTS[lang]["stats_stub"])
 
-
-load_users()
 
 app = Application.builder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("today", today))
 
-app.add_handler(CallbackQueryHandler(choose_language, pattern="^lang_"))
 app.add_handler(CallbackQueryHandler(handle_score, pattern="^score_"))
 app.add_handler(CallbackQueryHandler(handle_action, pattern="^(add_more|next)$"))
 app.add_handler(CallbackQueryHandler(handle_history, pattern="^history$"))
