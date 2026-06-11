@@ -26,6 +26,7 @@ BLOCKS = ["good", "anxiety", "goals"]
 def load_state():
     if not os.path.exists(STATE_FILE):
         return {}
+
     with open(STATE_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -70,7 +71,7 @@ def score_keyboard():
 def final_keyboard():
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("📅 История", callback_data="history"),
-        InlineKeyboardButton("📊 Статистика", callback_data="stats"),
+        InlineKeyboardButton("🗺 Карта радости", callback_data="joymap"),
     ]])
 
 
@@ -149,7 +150,8 @@ def get_admin_stats():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привет! Я JoyMap 🌱\n\n"
-        "Напиши /today, чтобы сделать запись."
+        "Я помогу тебе замечать, что делает твои дни лучше.\n\n"
+        "Напиши /today, чтобы сделать первую запись."
     )
 
 
@@ -290,12 +292,14 @@ async def handle_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clear_user_state(user_id)
 
     summary = (
-        "✨ Запись сохранена!\n\n"
-        "Сегодня:\n\n"
-        f"😊 Хорошее — {len(data['good'])} пункт(а)\n"
-        f"😟 Тревоги — {len(data['anxiety'])} пункт(а)\n"
-        f"🎯 Цели — {len(data['goals'])} пункт(а)\n\n"
-        f"Оценка дня: {score}/10"
+        "✨ Первая запись сохранена\n\n"
+        "Это первая точка на твоей карте радости 🌱\n\n"
+        "Каждый день состоит из сотен событий, но мозг чаще запоминает проблемы.\n\n"
+        "Сегодня ты заметила:\n\n"
+        f"😊 {len(data['good'])} хороших события\n"
+        f"🎯 {len(data['goals'])} шага к важным целям\n\n"
+        "Возвращайся завтра и мы начнём находить закономерности "
+        "и понимать, что делает твои дни счастливее. ✨"
     )
 
     await query.message.reply_text(summary, reply_markup=final_keyboard())
@@ -304,13 +308,15 @@ async def handle_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.message.reply_text("📅 История появится в следующей версии.")
+    await query.message.reply_text("📅 Скоро здесь появится история твоих записей ✨")
 
 
-async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_joymap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.message.reply_text("📊 Статистика появится в следующей версии.")
+    await query.message.reply_text(
+        "🗺 Чтобы увидеть первые закономерности, нужно минимум 3 дня записей 🌱"
+    )
 
 
 app = Application.builder().token(TOKEN).build()
@@ -322,7 +328,7 @@ app.add_handler(CommandHandler("admin", admin))
 app.add_handler(CallbackQueryHandler(handle_score, pattern="^score_"))
 app.add_handler(CallbackQueryHandler(handle_action, pattern="^(add_more|next)$"))
 app.add_handler(CallbackQueryHandler(handle_history, pattern="^history$"))
-app.add_handler(CallbackQueryHandler(handle_stats, pattern="^stats$"))
+app.add_handler(CallbackQueryHandler(handle_joymap, pattern="^joymap$"))
 
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
