@@ -4,6 +4,11 @@ import os
 
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
+print("TOKEN exists:", bool(TOKEN))
+print("TOKEN length:", len(TOKEN))
+print("TOKEN has colon:", ":" in TOKEN)
+print("TOKEN starts with:", TOKEN[:4])
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
