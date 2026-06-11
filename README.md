@@ -1,0 +1,1 @@
+# happy-patterns-bot
