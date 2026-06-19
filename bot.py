@@ -1,7 +1,8 @@
 import csv
 import json
 import os
-from datetime import datetime
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -19,6 +20,10 @@ ADMIN_ID = 64474188
 
 ENTRIES_FILE = "entries.csv"
 STATE_FILE = "state.json"
+USERS_FILE = "users.json"
+
+LOCAL_TZ = ZoneInfo("Europe/Moscow")
+REMINDER_TIME = time(hour=23, minute=0, tzinfo=LOCAL_TZ)
 
 BLOCKS = ["good", "anxiety", "goals"]
 
@@ -42,6 +47,25 @@ def save_state(state):
 USER_STATE = load_state()
 
 
+def load_users():
+    if not os.path.exists(USERS_FILE):
+        return {}
+
+    try:
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_users(users):
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(users, f, ensure_ascii=False)
+
+
+USERS = load_users()
+
+
 def user_key(user_id):
     return str(user_id)
 
@@ -58,6 +82,19 @@ def set_user_state(user_id, state):
 def clear_user_state(user_id):
     USER_STATE.pop(user_key(user_id), None)
     save_state(USER_STATE)
+
+
+def remember_user(user):
+    if not user:
+        return
+
+    USERS[user_key(user.id)] = {
+        "user_id": user.id,
+        "username": user.username or "",
+        "first_name": user.first_name or "",
+        "last_name": user.last_name or "",
+    }
+    save_users(USERS)
 
 
 def actions_keyboard(allow_more=True):
@@ -82,9 +119,46 @@ def final_keyboard():
     ]])
 
 
+def local_today():
+    return datetime.now(LOCAL_TZ).date()
+
+
+def parse_entry_date(created_at):
+    try:
+        entry_time = datetime.fromisoformat(created_at)
+    except (TypeError, ValueError):
+        return None
+
+    if entry_time.tzinfo is None:
+        entry_time = entry_time.replace(tzinfo=ZoneInfo("UTC"))
+
+    return entry_time.astimezone(LOCAL_TZ).date()
+
+
+def user_completed_today(user_id):
+    if not os.path.exists(ENTRIES_FILE):
+        return False
+
+    today = local_today()
+    user_id = str(user_id)
+
+    with open(ENTRIES_FILE, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+
+        for row in reader:
+            if row.get("user_id") != user_id:
+                continue
+            if row.get("block") != "score":
+                continue
+            if parse_entry_date(row.get("created_at")) == today:
+                return True
+
+    return False
+
+
 def save_entry(user, data):
     file_exists = os.path.exists(ENTRIES_FILE)
-    created_at = datetime.utcnow().isoformat()
+    created_at = datetime.now(ZoneInfo("UTC")).isoformat()
 
     with open(ENTRIES_FILE, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -168,6 +242,8 @@ def get_admin_stats():
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    remember_user(update.effective_user)
+
     await update.message.reply_text(
         "Привет! Я JoyMap 🌱\n\n"
         "Я помогу тебе замечать, что делает твои дни лучше.\n\n"
@@ -176,6 +252,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    remember_user(update.effective_user)
+
     user_id = update.effective_user.id
 
     state = {
@@ -194,11 +272,15 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    remember_user(update.effective_user)
+
     clear_user_state(update.effective_user.id)
     await update.message.reply_text("Сбросила текущую запись. Можно начать заново: /today")
 
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    remember_user(update.effective_user)
+
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("Команда недоступна.")
         return
@@ -218,6 +300,8 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    remember_user(user)
+
     user_id = user.id
 
     state = get_user_state(user_id)
@@ -258,6 +342,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    remember_user(query.from_user)
+
     await query.answer()
 
     try:
@@ -308,6 +394,8 @@ async def handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    remember_user(query.from_user)
+
     await query.answer()
 
     try:
@@ -362,7 +450,27 @@ async def handle_joymap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
+    for user_id in list(USERS.keys()):
+        if user_completed_today(user_id):
+            continue
+
+        try:
+            await context.bot.send_message(
+                chat_id=int(user_id),
+                text=(
+                    "🌙 Напоминание\n\n"
+                    "Заполни, что хорошего было сегодня.\n\n"
+                    "Напиши /today, чтобы сделать запись."
+                ),
+            )
+        except Exception:
+            pass
+
+
 app = Application.builder().token(TOKEN).build()
+
+app.job_queue.run_daily(send_daily_reminders, time=REMINDER_TIME, name="daily_reminders")
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("today", today))
