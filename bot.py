@@ -1,6 +1,8 @@
 import csv
 import json
 import os
+import re
+from collections import Counter
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
@@ -26,6 +28,41 @@ LOCAL_TZ = ZoneInfo("Europe/Moscow")
 REMINDER_TIME = time(hour=23, minute=0, tzinfo=LOCAL_TZ)
 
 BLOCKS = ["good", "anxiety", "goals"]
+ANALYTICS_MILESTONES = [3, 7, 14, 30]
+MILESTONE_TITLES = {
+    3: "Первые 3 дня",
+    7: "Неделя",
+    14: "2 недели",
+    30: "Месяц",
+}
+STOP_WORDS = {
+    "была",
+    "было",
+    "были",
+    "быть",
+    "все",
+    "для",
+    "день",
+    "еще",
+    "как",
+    "меня",
+    "мне",
+    "мой",
+    "моя",
+    "мои",
+    "она",
+    "они",
+    "очень",
+    "при",
+    "про",
+    "себя",
+    "сегодня",
+    "так",
+    "там",
+    "тебя",
+    "что",
+    "это",
+}
 
 
 def load_state():
@@ -156,6 +193,142 @@ def user_completed_today(user_id):
     return False
 
 
+def get_user_daily_entries(user_id):
+    if not os.path.exists(ENTRIES_FILE):
+        return []
+
+    user_id = str(user_id)
+    entries_by_date = {}
+
+    with open(ENTRIES_FILE, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+
+        for row in reader:
+            if row.get("user_id") != user_id:
+                continue
+
+            entry_date = parse_entry_date(row.get("created_at"))
+            if not entry_date:
+                continue
+
+            day_key = entry_date.isoformat()
+            entry = entries_by_date.setdefault(day_key, {
+                "date": entry_date,
+                "good": [],
+                "anxiety": [],
+                "goals": [],
+                "score": None,
+            })
+
+            block = row.get("block")
+            if block in BLOCKS and row.get("answer"):
+                entry[block].append(row["answer"])
+            elif block == "score" and row.get("day_score"):
+                try:
+                    entry["score"] = int(row["day_score"])
+                except ValueError:
+                    pass
+
+    completed_entries = [
+        entry for entry in entries_by_date.values()
+        if entry["score"] is not None
+    ]
+    return sorted(completed_entries, key=lambda item: item["date"])
+
+
+def next_analytics_milestone(entries_count):
+    for milestone in ANALYTICS_MILESTONES:
+        if entries_count < milestone:
+            return milestone
+    return None
+
+
+def best_available_milestone(entries_count):
+    available = [
+        milestone for milestone in ANALYTICS_MILESTONES
+        if entries_count >= milestone
+    ]
+    if not available:
+        return None
+    return max(available)
+
+
+def top_words(entries, block, limit=5):
+    counter = Counter()
+
+    for entry in entries:
+        for answer in entry[block]:
+            words = re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", answer.lower())
+            for word in words:
+                if len(word) < 4 or word in STOP_WORDS:
+                    continue
+                counter[word] += 1
+
+    return [word for word, _ in counter.most_common(limit)]
+
+
+def format_words(words):
+    if not words:
+        return "пока нет явных повторов"
+    return ", ".join(words)
+
+
+def build_analytics_message(user_id, milestone=None):
+    entries = get_user_daily_entries(user_id)
+    entries_count = len(entries)
+
+    if milestone is None:
+        milestone = best_available_milestone(entries_count)
+
+    if milestone is None:
+        next_milestone = next_analytics_milestone(entries_count)
+        days_left = next_milestone - entries_count
+        return (
+            "🗺 Карта радости ещё собирается\n\n"
+            f"Сейчас есть завершённых дней: {entries_count}.\n"
+            f"До первой аналитики осталось: {days_left}."
+        )
+
+    period_entries = entries[-milestone:]
+    scores = [entry["score"] for entry in period_entries]
+    average_score = sum(scores) / len(scores)
+    best_entry = max(period_entries, key=lambda entry: entry["score"])
+    low_entry = min(period_entries, key=lambda entry: entry["score"])
+
+    good_count = sum(len(entry["good"]) for entry in period_entries)
+    anxiety_count = sum(len(entry["anxiety"]) for entry in period_entries)
+    goals_count = sum(len(entry["goals"]) for entry in period_entries)
+
+    next_milestone = next_analytics_milestone(entries_count)
+    next_line = ""
+    if next_milestone:
+        next_line = (
+            f"\n\nСледующая аналитика откроется на {next_milestone} днях."
+        )
+
+    return (
+        f"🗺 {MILESTONE_TITLES[milestone]}: твоя аналитика\n\n"
+        f"Завершённых дней всего: {entries_count}\n"
+        f"В этом периоде: {milestone}\n"
+        f"Средняя оценка дня: {average_score:.1f}/10\n"
+        f"Лучший день: {best_entry['date'].strftime('%d.%m')} "
+        f"({best_entry['score']}/10)\n"
+        f"Самый сложный день: {low_entry['date'].strftime('%d.%m')} "
+        f"({low_entry['score']}/10)\n\n"
+        "Что чаще связано с хорошим:\n"
+        f"😊 {format_words(top_words(period_entries, 'good'))}\n\n"
+        "Что чаще тревожит:\n"
+        f"😟 {format_words(top_words(period_entries, 'anxiety'))}\n\n"
+        "Где чаще были шаги к целям:\n"
+        f"🎯 {format_words(top_words(period_entries, 'goals'))}\n\n"
+        "За период ты заметила:\n"
+        f"😊 хорошего: {good_count}\n"
+        f"😟 тревог: {anxiety_count}\n"
+        f"🎯 шагов к целям: {goals_count}"
+        f"{next_line}"
+    )
+
+
 def save_entry(user, data):
     file_exists = os.path.exists(ENTRIES_FILE)
     created_at = datetime.now(ZoneInfo("UTC")).isoformat()
@@ -247,7 +420,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привет! Я JoyMap 🌱\n\n"
         "Я помогу тебе замечать, что делает твои дни лучше.\n\n"
-        "Напиши /today, чтобы сделать первую запись."
+        "Напиши /today, чтобы сделать первую запись.\n"
+        "А /analytics покажет карту радости, когда накопится минимум 3 дня."
     )
 
 
@@ -295,6 +469,14 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"😊 Хорошее: {stats['good_rows']}\n"
         f"😟 Тревоги: {stats['anxiety_rows']}\n"
         f"🎯 Цели: {stats['goals_rows']}"
+    )
+
+
+async def analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    remember_user(update.effective_user)
+
+    await update.message.reply_text(
+        build_analytics_message(update.effective_user.id)
     )
 
 
@@ -433,6 +615,12 @@ async def handle_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.message.reply_text(summary, reply_markup=final_keyboard())
 
+    entries_count = len(get_user_daily_entries(user_id))
+    if entries_count in ANALYTICS_MILESTONES:
+        await query.message.reply_text(
+            build_analytics_message(user_id, milestone=entries_count)
+        )
+
 
 async def handle_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -443,11 +631,11 @@ async def handle_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_joymap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    remember_user(query.from_user)
+
     await query.answer()
 
-    await query.message.reply_text(
-        "🗺 Чтобы увидеть первые закономерности, нужно минимум 3 дня записей 🌱"
-    )
+    await query.message.reply_text(build_analytics_message(query.from_user.id))
 
 
 async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
@@ -476,6 +664,7 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("today", today))
 app.add_handler(CommandHandler("reset", reset))
 app.add_handler(CommandHandler("admin", admin))
+app.add_handler(CommandHandler("analytics", analytics))
 
 app.add_handler(CallbackQueryHandler(handle_score, pattern="^score_"))
 app.add_handler(CallbackQueryHandler(handle_action, pattern="^(add_more|next)$"))
