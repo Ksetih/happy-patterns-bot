@@ -4,8 +4,10 @@ import os
 import re
 from collections import Counter
 from datetime import datetime, time
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from openai import AsyncOpenAI, OpenAIError
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
@@ -17,12 +19,18 @@ from telegram.ext import (
 )
 
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.5").strip()
+OPENAI_CLIENT = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 ADMIN_ID = 64474188
 
-ENTRIES_FILE = "entries.csv"
-STATE_FILE = "state.json"
-USERS_FILE = "users.json"
+DATA_DIR = Path(os.getenv("BOT_DATA_DIR", ".")).expanduser()
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+ENTRIES_FILE = DATA_DIR / "entries.csv"
+STATE_FILE = DATA_DIR / "state.json"
+USERS_FILE = DATA_DIR / "users.json"
 
 LOCAL_TZ = ZoneInfo("Europe/Moscow")
 REMINDER_TIME = time(hour=23, minute=0, tzinfo=LOCAL_TZ)
@@ -329,6 +337,115 @@ def build_analytics_message(user_id, milestone=None):
     )
 
 
+def build_period_stats(entries, entries_count, milestone):
+    scores = [entry["score"] for entry in entries]
+    best_entry = max(entries, key=lambda entry: entry["score"])
+    low_entry = min(entries, key=lambda entry: entry["score"])
+
+    return {
+        "completed_days_total": entries_count,
+        "period_days": milestone,
+        "average_score": round(sum(scores) / len(scores), 1),
+        "best_day": {
+            "date": best_entry["date"].isoformat(),
+            "score": best_entry["score"],
+        },
+        "lowest_day": {
+            "date": low_entry["date"].isoformat(),
+            "score": low_entry["score"],
+        },
+        "counts": {
+            "good": sum(len(entry["good"]) for entry in entries),
+            "anxiety": sum(len(entry["anxiety"]) for entry in entries),
+            "goals": sum(len(entry["goals"]) for entry in entries),
+        },
+        "frequent_words": {
+            "good": top_words(entries, "good"),
+            "anxiety": top_words(entries, "anxiety"),
+            "goals": top_words(entries, "goals"),
+        },
+    }
+
+
+def serialize_entries_for_ai(entries):
+    return [
+        {
+            "date": entry["date"].isoformat(),
+            "score": entry["score"],
+            "good": entry["good"],
+            "anxiety": entry["anxiety"],
+            "goals": entry["goals"],
+        }
+        for entry in entries
+    ]
+
+
+def build_ai_prompt(entries, entries_count, milestone):
+    payload = {
+        "milestone_title": MILESTONE_TITLES[milestone],
+        "stats": build_period_stats(entries, entries_count, milestone),
+        "entries": serialize_entries_for_ai(entries),
+    }
+
+    return (
+        "Ты пишешь аналитику для Telegram-бота JoyMap: дневника радости, "
+        "тревог и маленьких шагов к целям.\n\n"
+        "Задача: по данным пользователя сделать теплую, конкретную, "
+        "бережную аналитику на русском языке.\n\n"
+        "Правила:\n"
+        "- Пиши на 'ты', мягко и без давления.\n"
+        "- Не ставь диагнозы, не делай медицинских или психологических выводов.\n"
+        "- Не придумывай факты, которых нет в записях.\n"
+        "- Если данных мало, формулируй как гипотезы: 'похоже', 'может быть'.\n"
+        "- Избегай канцелярита и общих фраз вроде 'продолжай в том же духе'.\n"
+        "- Не используй Markdown-таблицы.\n"
+        "- Длина: до 2200 символов.\n\n"
+        "Структура ответа:\n"
+        "1. Заголовок с названием периода.\n"
+        "2. 2-3 предложения главного наблюдения.\n"
+        "3. Блок 'Что тебя питает' — конкретные повторяющиеся источники хорошего.\n"
+        "4. Блок 'Что забирает силы' — повторяющиеся тревоги или напряжение.\n"
+        "5. Блок 'Твои опоры' — что уже помогает двигаться к целям.\n"
+        "6. Один маленький эксперимент на следующие дни.\n\n"
+        "Данные:\n"
+        f"{json.dumps(payload, ensure_ascii=False)}"
+    )
+
+
+async def build_openai_analytics_message(user_id, milestone=None):
+    if not OPENAI_CLIENT:
+        return build_analytics_message(user_id, milestone=milestone)
+
+    entries = get_user_daily_entries(user_id)
+    entries_count = len(entries)
+
+    if milestone is None:
+        milestone = best_available_milestone(entries_count)
+
+    if milestone is None:
+        return build_analytics_message(user_id, milestone=milestone)
+
+    period_entries = entries[-milestone:]
+
+    try:
+        response = await OPENAI_CLIENT.responses.create(
+            model=OPENAI_MODEL,
+            input=build_ai_prompt(period_entries, entries_count, milestone),
+        )
+    except (OpenAIError, AttributeError):
+        return build_analytics_message(user_id, milestone=milestone)
+
+    text = response.output_text.strip()
+    if not text:
+        return build_analytics_message(user_id, milestone=milestone)
+
+    next_milestone = next_analytics_milestone(entries_count)
+    if next_milestone:
+        text += f"\n\nСледующая аналитика откроется на {next_milestone} днях."
+
+    return text
+
+
 def save_entry(user, data):
     file_exists = os.path.exists(ENTRIES_FILE)
     created_at = datetime.now(ZoneInfo("UTC")).isoformat()
@@ -476,7 +593,7 @@ async def analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     remember_user(update.effective_user)
 
     await update.message.reply_text(
-        build_analytics_message(update.effective_user.id)
+        await build_openai_analytics_message(update.effective_user.id)
     )
 
 
@@ -618,7 +735,7 @@ async def handle_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
     entries_count = len(get_user_daily_entries(user_id))
     if entries_count in ANALYTICS_MILESTONES:
         await query.message.reply_text(
-            build_analytics_message(user_id, milestone=entries_count)
+            await build_openai_analytics_message(user_id, milestone=entries_count)
         )
 
 
@@ -635,7 +752,9 @@ async def handle_joymap(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.answer()
 
-    await query.message.reply_text(build_analytics_message(query.from_user.id))
+    await query.message.reply_text(
+        await build_openai_analytics_message(query.from_user.id)
+    )
 
 
 async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
