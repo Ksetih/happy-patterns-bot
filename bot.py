@@ -34,6 +34,7 @@ OPENAI_CLIENT = (
     if AsyncOpenAI and OPENAI_API_KEY
     else None
 )
+OPENAI_LAST_ERROR = ""
 
 ADMIN_ID = 64474188
 
@@ -341,6 +342,71 @@ def format_words(words):
     return ", ".join(words)
 
 
+def collect_answers(entries, block, limit=6):
+    answers = []
+    seen = set()
+
+    for entry in entries:
+        for answer in entry[block]:
+            cleaned = " ".join(answer.strip().split())
+            key = cleaned.lower()
+            if cleaned and key not in seen:
+                answers.append(cleaned)
+                seen.add(key)
+
+    return answers[:limit]
+
+
+def join_examples(examples):
+    if not examples:
+        return ""
+    if len(examples) == 1:
+        return examples[0]
+    if len(examples) == 2:
+        return f"{examples[0]} и {examples[1]}"
+    return f"{', '.join(examples[:-1])} и {examples[-1]}"
+
+
+def build_reflection(block, examples):
+    joined = join_examples(examples)
+
+    if not examples:
+        if block == "good":
+            return (
+                "В хороших моментах пока мало повторов, но это нормально для "
+                "первых дней: карта ещё только собирается."
+            )
+        if block == "anxiety":
+            return (
+                "В тревогах пока нет устойчивого рисунка. Пока лучше смотреть "
+                "не на выводы, а на то, что повторится дальше."
+            )
+        return (
+            "В целях пока не видно одного главного направления, но уже важен "
+            "сам факт маленьких шагов."
+        )
+
+    if block == "good":
+        return (
+            "Похоже, хорошие моменты сейчас держатся на простых, но важных "
+            f"опорах: {joined}. Это не случайные мелочи, а то, что помогает "
+            "дню ощущаться живее и устойчивее."
+        )
+
+    if block == "anxiety":
+        return (
+            "В напряжении чаще всплывают темы вроде: "
+            f"{joined}. Это похоже на зоны, где сейчас больше всего нагрузки "
+            "и где особенно важно не требовать от себя лишнего."
+        )
+
+    return (
+        "В шагах к целям видно движение через конкретные действия: "
+        f"{joined}. Похоже, тебе помогает не большой рывок, а понятный "
+        "следующий шаг, который можно сделать сегодня."
+    )
+
+
 def build_analytics_message(user_id, milestone=None):
     entries = get_user_daily_entries(user_id)
     entries_count = len(entries)
@@ -366,6 +432,9 @@ def build_analytics_message(user_id, milestone=None):
     good_count = sum(len(entry["good"]) for entry in period_entries)
     anxiety_count = sum(len(entry["anxiety"]) for entry in period_entries)
     goals_count = sum(len(entry["goals"]) for entry in period_entries)
+    good_examples = collect_answers(period_entries, "good")
+    anxiety_examples = collect_answers(period_entries, "anxiety")
+    goals_examples = collect_answers(period_entries, "goals")
 
     next_milestone = next_analytics_milestone(entries_count)
     next_line = ""
@@ -383,12 +452,12 @@ def build_analytics_message(user_id, milestone=None):
         f"({best_entry['score']}/10)\n"
         f"Самый сложный день: {low_entry['date'].strftime('%d.%m')} "
         f"({low_entry['score']}/10)\n\n"
-        "Что чаще связано с хорошим:\n"
-        f"😊 {format_words(top_words(period_entries, 'good'))}\n\n"
-        "Что чаще тревожит:\n"
-        f"😟 {format_words(top_words(period_entries, 'anxiety'))}\n\n"
-        "Где чаще были шаги к целям:\n"
-        f"🎯 {format_words(top_words(period_entries, 'goals'))}\n\n"
+        "Что связано с хорошим\n"
+        f"😊 {build_reflection('good', good_examples)}\n\n"
+        "Что забирает силы\n"
+        f"😟 {build_reflection('anxiety', anxiety_examples)}\n\n"
+        "Где есть движение\n"
+        f"🎯 {build_reflection('goals', goals_examples)}\n\n"
         "За период ты заметила:\n"
         f"😊 хорошего: {good_count}\n"
         f"😟 тревог: {anxiety_count}\n"
@@ -473,7 +542,13 @@ def build_ai_prompt(entries, entries_count, milestone):
 
 
 async def build_openai_analytics_message(user_id, milestone=None):
+    global OPENAI_LAST_ERROR
+
     if not OPENAI_CLIENT:
+        if not AsyncOpenAI:
+            OPENAI_LAST_ERROR = "openai package is not installed"
+        elif not OPENAI_API_KEY:
+            OPENAI_LAST_ERROR = "OPENAI_API_KEY is not set"
         return build_analytics_message(user_id, milestone=milestone)
 
     entries = get_user_daily_entries(user_id)
@@ -492,12 +567,16 @@ async def build_openai_analytics_message(user_id, milestone=None):
             model=OPENAI_MODEL,
             input=build_ai_prompt(period_entries, entries_count, milestone),
         )
-    except (OpenAIError, AttributeError):
+    except (OpenAIError, AttributeError) as error:
+        OPENAI_LAST_ERROR = f"{type(error).__name__}: {error}"
         return build_analytics_message(user_id, milestone=milestone)
 
     text = response.output_text.strip()
     if not text:
+        OPENAI_LAST_ERROR = "OpenAI returned empty text"
         return build_analytics_message(user_id, milestone=milestone)
+
+    OPENAI_LAST_ERROR = ""
 
     next_milestone = next_analytics_milestone(entries_count)
     if next_milestone:
@@ -669,7 +748,12 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"entries exists: {stats['entries_exists']}\n"
         f"entries size: {stats['entries_size']} bytes\n"
         f"state.json exists: {stats['state_exists']}\n"
-        f"users.json exists: {stats['users_exists']}"
+        f"users.json exists: {stats['users_exists']}\n\n"
+        "🤖 OpenAI\n"
+        f"SDK installed: {AsyncOpenAI is not None}\n"
+        f"API key set: {bool(OPENAI_API_KEY)}\n"
+        f"model: {OPENAI_MODEL}\n"
+        f"last error: {OPENAI_LAST_ERROR or 'none'}"
     )
 
 
