@@ -37,7 +37,20 @@ OPENAI_CLIENT = (
 
 ADMIN_ID = 64474188
 
-DATA_DIR = Path(os.getenv("BOT_DATA_DIR", ".")).expanduser()
+
+def get_data_dir():
+    configured_dir = os.getenv("BOT_DATA_DIR", "").strip()
+    if configured_dir:
+        return Path(configured_dir).expanduser()
+
+    railway_volume_dir = Path("/data")
+    if railway_volume_dir.exists():
+        return railway_volume_dir
+
+    return Path(".")
+
+
+DATA_DIR = get_data_dir()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 ENTRIES_FILE = DATA_DIR / "entries.csv"
