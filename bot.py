@@ -709,11 +709,9 @@ async def handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         action, button_step = query.data.rsplit("_", 1)
     except ValueError:
-        await query.message.reply_text("Эта кнопка устарела. Продолжи текущий ответ.")
         return
 
     if button_step != current_step:
-        await query.message.reply_text("Эта кнопка устарела. Продолжи текущий ответ.")
         return
 
     if action == "add_more":
