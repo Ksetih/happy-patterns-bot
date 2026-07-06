@@ -168,11 +168,15 @@ def remember_user(user):
     save_users(USERS)
 
 
-def actions_keyboard(allow_more=True):
+def actions_keyboard(step, allow_more=True):
     buttons = []
     if allow_more:
-        buttons.append(InlineKeyboardButton("➕ Добавить ещё", callback_data="add_more"))
-    buttons.append(InlineKeyboardButton("➡️ Следующий вопрос", callback_data="next"))
+        buttons.append(
+            InlineKeyboardButton("➕ Добавить ещё", callback_data=f"add_more_{step}")
+        )
+    buttons.append(
+        InlineKeyboardButton("➡️ Следующий вопрос", callback_data=f"next_{step}")
+    )
     return InlineKeyboardMarkup([buttons])
 
 
@@ -673,12 +677,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if count >= 3:
         await update.message.reply_text(
             "Записала 3 пункта ✅",
-            reply_markup=actions_keyboard(allow_more=False),
+            reply_markup=actions_keyboard(step, allow_more=False),
         )
     else:
         await update.message.reply_text(
             "Записала ✅",
-            reply_markup=actions_keyboard(allow_more=True),
+            reply_markup=actions_keyboard(step, allow_more=True),
         )
 
 
@@ -700,31 +704,45 @@ async def handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Напиши /today, чтобы сделать запись.")
         return
 
-    step = state["step"]
+    current_step = state["step"]
 
-    if query.data == "add_more":
-        if step == "good":
+    try:
+        action, button_step = query.data.rsplit("_", 1)
+    except ValueError:
+        await query.message.reply_text("Эта кнопка устарела. Продолжи текущий ответ.")
+        return
+
+    if button_step != current_step:
+        await query.message.reply_text("Эта кнопка устарела. Продолжи текущий ответ.")
+        return
+
+    if action == "add_more":
+        if current_step == "good":
             await query.message.reply_text("😊 Что ещё хорошего произошло сегодня?")
-        elif step == "anxiety":
+        elif current_step == "anxiety":
             await query.message.reply_text("😟 Что ещё тревожило или расстраивало?")
-        elif step == "goals":
+        elif current_step == "goals":
             await query.message.reply_text("🎯 Что ещё сделала для важных целей?")
         return
 
-    if query.data == "next":
-        if step == "good":
+    if action == "next":
+        if current_step in BLOCKS and not state["data"].get(current_step):
+            await query.message.reply_text("Сначала напиши хотя бы один ответ.")
+            return
+
+        if current_step == "good":
             state["step"] = "anxiety"
             set_user_state(user_id, state)
             await query.message.reply_text("😟 Что сегодня тревожило или расстраивало?")
             return
 
-        if step == "anxiety":
+        if current_step == "anxiety":
             state["step"] = "goals"
             set_user_state(user_id, state)
             await query.message.reply_text("🎯 Что сегодня сделала для важных целей?")
             return
 
-        if step == "goals":
+        if current_step == "goals":
             state["step"] = "score"
             set_user_state(user_id, state)
             await query.message.reply_text(
@@ -835,7 +853,12 @@ def build_app():
     app.add_handler(CommandHandler("analytics", analytics))
 
     app.add_handler(CallbackQueryHandler(handle_score, pattern="^score_"))
-    app.add_handler(CallbackQueryHandler(handle_action, pattern="^(add_more|next)$"))
+    app.add_handler(
+        CallbackQueryHandler(
+            handle_action,
+            pattern="^(add_more|next)(_(good|anxiety|goals))?$",
+        )
+    )
     app.add_handler(CallbackQueryHandler(handle_history, pattern="^history$"))
     app.add_handler(CallbackQueryHandler(handle_joymap, pattern="^joymap$"))
 
