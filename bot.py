@@ -535,6 +535,11 @@ def save_entry(user, data):
 
 
 def get_admin_stats():
+    entries_exists = os.path.exists(ENTRIES_FILE)
+    state_exists = os.path.exists(STATE_FILE)
+    users_exists = os.path.exists(USERS_FILE)
+    entries_size = ENTRIES_FILE.stat().st_size if entries_exists else 0
+
     if not os.path.exists(ENTRIES_FILE):
         return {
             "users": 0,
@@ -543,6 +548,12 @@ def get_admin_stats():
             "good_rows": 0,
             "anxiety_rows": 0,
             "goals_rows": 0,
+            "data_dir": str(DATA_DIR.resolve()),
+            "entries_file": str(ENTRIES_FILE.resolve()),
+            "entries_exists": entries_exists,
+            "entries_size": entries_size,
+            "state_exists": state_exists,
+            "users_exists": users_exists,
         }
 
     users = set()
@@ -575,6 +586,12 @@ def get_admin_stats():
         "good_rows": good_rows,
         "anxiety_rows": anxiety_rows,
         "goals_rows": goals_rows,
+        "data_dir": str(DATA_DIR.resolve()),
+        "entries_file": str(ENTRIES_FILE.resolve()),
+        "entries_exists": entries_exists,
+        "entries_size": entries_size,
+        "state_exists": state_exists,
+        "users_exists": users_exists,
     }
 
 
@@ -632,7 +649,14 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Всего сохранённых строк: {stats['total_rows']}\n\n"
         f"😊 Хорошее: {stats['good_rows']}\n"
         f"😟 Тревоги: {stats['anxiety_rows']}\n"
-        f"🎯 Цели: {stats['goals_rows']}"
+        f"🎯 Цели: {stats['goals_rows']}\n\n"
+        "🧰 Storage\n"
+        f"DATA_DIR: {stats['data_dir']}\n"
+        f"entries.csv: {stats['entries_file']}\n"
+        f"entries exists: {stats['entries_exists']}\n"
+        f"entries size: {stats['entries_size']} bytes\n"
+        f"state.json exists: {stats['state_exists']}\n"
+        f"users.json exists: {stats['users_exists']}"
     )
 
 
