@@ -2,12 +2,12 @@ import csv
 import json
 import os
 import re
+import uuid
 from collections import Counter
 from datetime import datetime, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from openai import AsyncOpenAI, OpenAIError
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
@@ -18,10 +18,22 @@ from telegram.ext import (
     filters,
 )
 
+try:
+    from openai import AsyncOpenAI, OpenAIError
+except ImportError:
+    AsyncOpenAI = None
+
+    class OpenAIError(Exception):
+        pass
+
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.5").strip()
-OPENAI_CLIENT = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+OPENAI_CLIENT = (
+    AsyncOpenAI(api_key=OPENAI_API_KEY)
+    if AsyncOpenAI and OPENAI_API_KEY
+    else None
+)
 
 ADMIN_ID = 64474188
 
@@ -85,8 +97,15 @@ def load_state():
 
 
 def save_state(state):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False)
+    write_json_file(STATE_FILE, state)
+
+
+def write_json_file(path, data):
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(temp_path, path)
 
 
 USER_STATE = load_state()
@@ -104,8 +123,7 @@ def load_users():
 
 
 def save_users(users):
-    with open(USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(users, f, ensure_ascii=False)
+    write_json_file(USERS_FILE, users)
 
 
 USERS = load_users()
@@ -116,15 +134,21 @@ def user_key(user_id):
 
 
 def get_user_state(user_id):
+    USER_STATE.clear()
+    USER_STATE.update(load_state())
     return USER_STATE.get(user_key(user_id))
 
 
 def set_user_state(user_id, state):
+    USER_STATE.clear()
+    USER_STATE.update(load_state())
     USER_STATE[user_key(user_id)] = state
     save_state(USER_STATE)
 
 
 def clear_user_state(user_id):
+    USER_STATE.clear()
+    USER_STATE.update(load_state())
     USER_STATE.pop(user_key(user_id), None)
     save_state(USER_STATE)
 
@@ -133,6 +157,8 @@ def remember_user(user):
     if not user:
         return
 
+    USERS.clear()
+    USERS.update(load_users())
     USERS[user_key(user.id)] = {
         "user_id": user.id,
         "username": user.username or "",
@@ -199,6 +225,23 @@ def user_completed_today(user_id):
                 return True
 
     return False
+
+
+def get_known_user_ids():
+    user_ids = set(load_users().keys())
+
+    if not os.path.exists(ENTRIES_FILE):
+        return user_ids
+
+    with open(ENTRIES_FILE, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+
+        for row in reader:
+            user_id = row.get("user_id")
+            if user_id:
+                user_ids.add(str(user_id))
+
+    return user_ids
 
 
 def get_user_daily_entries(user_id):
@@ -758,7 +801,7 @@ async def handle_joymap(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
-    for user_id in list(USERS.keys()):
+    for user_id in get_known_user_ids():
         if user_completed_today(user_id):
             continue
 
@@ -775,21 +818,30 @@ async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
             pass
 
 
-app = Application.builder().token(TOKEN).build()
+def build_app():
+    app = Application.builder().token(TOKEN).build()
 
-app.job_queue.run_daily(send_daily_reminders, time=REMINDER_TIME, name="daily_reminders")
+    if app.job_queue:
+        app.job_queue.run_daily(
+            send_daily_reminders,
+            time=REMINDER_TIME,
+            name="daily_reminders",
+        )
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("today", today))
-app.add_handler(CommandHandler("reset", reset))
-app.add_handler(CommandHandler("admin", admin))
-app.add_handler(CommandHandler("analytics", analytics))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("today", today))
+    app.add_handler(CommandHandler("reset", reset))
+    app.add_handler(CommandHandler("admin", admin))
+    app.add_handler(CommandHandler("analytics", analytics))
 
-app.add_handler(CallbackQueryHandler(handle_score, pattern="^score_"))
-app.add_handler(CallbackQueryHandler(handle_action, pattern="^(add_more|next)$"))
-app.add_handler(CallbackQueryHandler(handle_history, pattern="^history$"))
-app.add_handler(CallbackQueryHandler(handle_joymap, pattern="^joymap$"))
+    app.add_handler(CallbackQueryHandler(handle_score, pattern="^score_"))
+    app.add_handler(CallbackQueryHandler(handle_action, pattern="^(add_more|next)$"))
+    app.add_handler(CallbackQueryHandler(handle_history, pattern="^history$"))
+    app.add_handler(CallbackQueryHandler(handle_joymap, pattern="^joymap$"))
 
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    return app
 
-app.run_polling()
+
+if __name__ == "__main__":
+    build_app().run_polling()
