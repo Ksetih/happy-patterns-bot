@@ -97,6 +97,21 @@ STOP_WORDS = {
     "что",
     "это",
 }
+THEME_RULES = [
+    ("сон и восстановление", ["сон", "спал", "спала", "спать", "поспал", "поспала", "отдох", "отдых", "лежал"]),
+    ("еда и маленькие удовольствия", ["ел", "ела", "поел", "поела", "еда", "кофе", "чай", "завтрак", "обед", "ужин"]),
+    ("прогулки и движение", ["гуля", "погуля", "ходил", "ходила", "прогул", "спорт", "йога", "зал", "бег"]),
+    ("животные и забота", ["собак", "кот", "кошка", "питом", "животн"]),
+    ("работа и собеседования", ["работ", "собес", "интерв", "созвон", "коллег", "встреч", "дедлайн"]),
+    ("задачи и конкретные дела", ["задач", "сделал", "сделала", "решил", "решила", "закрыл", "закрыла", "дела"]),
+    ("проекты и творчество", ["проект", "написал", "написала", "текст", "код", "дизайн", "иде", "творч"]),
+    ("дом и порядок", ["дом", "убрал", "убрала", "уборк", "поряд", "готов", "посуд", "стир"]),
+    ("деньги и безопасность", ["деньг", "финанс", "зарплат", "оплат", "платеж", "кредит", "долг"]),
+    ("отношения и общение", ["отнош", "муж", "жена", "парен", "девуш", "друг", "подруг", "семь", "мам", "пап"]),
+    ("война и новости", ["войн", "дрон", "новост", "полит", "обстр", "тревог", "сирен"]),
+    ("здоровье и тело", ["здоров", "бол", "врач", "тело", "голов", "устал", "сил", "энерг"]),
+    ("учеба и поддержка", ["учеб", "курс", "ментор", "настав", "психолог", "терап", "разбор"]),
+]
 
 
 def load_state():
@@ -322,6 +337,12 @@ def best_available_milestone(entries_count):
     return max(available)
 
 
+def chart_availability_line(entries_count):
+    if entries_count < 7:
+        return "\n\n📈 График откроется после 7 завершенных дней."
+    return ""
+
+
 def top_words(entries, block, limit=5):
     counter = Counter()
 
@@ -357,6 +378,54 @@ def collect_answers(entries, block, limit=6):
     return answers[:limit]
 
 
+def normalize_text(text):
+    return text.lower().replace("ё", "е")
+
+
+def match_themes(answer):
+    normalized = normalize_text(answer)
+    matched = []
+
+    for label, markers in THEME_RULES:
+        if any(marker in normalized for marker in markers):
+            matched.append(label)
+
+    return matched
+
+
+def analyze_themes(entries, block, limit=4):
+    counter = Counter()
+    examples_by_theme = {}
+    unmatched = []
+
+    for entry in entries:
+        for answer in entry[block]:
+            cleaned = " ".join(answer.strip().split())
+            if not cleaned:
+                continue
+
+            themes = match_themes(cleaned)
+            if not themes:
+                unmatched.append(cleaned)
+                continue
+
+            for theme in set(themes):
+                counter[theme] += 1
+                examples_by_theme.setdefault(theme, [])
+                if len(examples_by_theme[theme]) < 3:
+                    examples_by_theme[theme].append(cleaned)
+
+    top_themes = []
+    for theme, count in counter.most_common(limit):
+        top_themes.append({
+            "theme": theme,
+            "count": count,
+            "examples": examples_by_theme.get(theme, []),
+        })
+
+    return top_themes, unmatched[:3]
+
+
 def join_examples(examples):
     if not examples:
         return ""
@@ -367,43 +436,72 @@ def join_examples(examples):
     return f"{', '.join(examples[:-1])} и {examples[-1]}"
 
 
-def build_reflection(block, examples):
-    joined = join_examples(examples)
+def format_theme_list(themes):
+    if not themes:
+        return ""
+
+    parts = []
+    for item in themes:
+        parts.append(f"{item['theme']} ({item['count']})")
+    return join_examples(parts)
+
+
+def format_theme_examples(themes, unmatched):
+    examples = []
+    seen = set()
+
+    for item in themes[:2]:
+        for example in item["examples"][:2]:
+            key = normalize_text(example)
+            if key not in seen:
+                examples.append(example)
+                seen.add(key)
 
     if not examples:
+        examples = unmatched
+
+    return join_examples(examples[:4])
+
+
+def build_reflection(block, themes, unmatched):
+    theme_list = format_theme_list(themes)
+    examples = format_theme_examples(themes, unmatched)
+
+    if not themes:
+        fallback = join_examples(unmatched)
         if block == "good":
             return (
                 "В хороших моментах пока мало повторов, но это нормально для "
-                "первых дней: карта ещё только собирается."
+                f"первых дней. Пока видны отдельные точки: {fallback}."
             )
         if block == "anxiety":
             return (
                 "В тревогах пока нет устойчивого рисунка. Пока лучше смотреть "
-                "не на выводы, а на то, что повторится дальше."
+                f"не на выводы, а на то, что повторится дальше: {fallback}."
             )
         return (
             "В целях пока не видно одного главного направления, но уже важен "
-            "сам факт маленьких шагов."
+            f"сам факт маленьких шагов: {fallback}."
         )
 
     if block == "good":
         return (
-            "Похоже, хорошие моменты сейчас держатся на простых, но важных "
-            f"опорах: {joined}. Это не случайные мелочи, а то, что помогает "
-            "дню ощущаться живее и устойчивее."
+            f"Чаще всего повторялись темы: {theme_list}. По примерам вроде "
+            f"{examples} видно, что хорошее сейчас держится не на одной "
+            "большой победе, а на нескольких устойчивых источниках."
         )
 
     if block == "anxiety":
         return (
-            "В напряжении чаще всплывают темы вроде: "
-            f"{joined}. Это похоже на зоны, где сейчас больше всего нагрузки "
-            "и где особенно важно не требовать от себя лишнего."
+            f"Чаще всего напряжение собиралось вокруг тем: {theme_list}. "
+            f"По записям вроде {examples} видно, где сейчас больше всего "
+            "нагрузки и что сильнее тянет оценку дня вниз."
         )
 
     return (
-        "В шагах к целям видно движение через конкретные действия: "
-        f"{joined}. Похоже, тебе помогает не большой рывок, а понятный "
-        "следующий шаг, который можно сделать сегодня."
+        f"В движении к целям чаще всего встречались: {theme_list}. "
+        f"Примеры вроде {examples} показывают, что прогресс идет через "
+        "конкретные действия, а не через абстрактное 'надо собраться'."
     )
 
 
@@ -432,9 +530,9 @@ def build_analytics_message(user_id, milestone=None):
     good_count = sum(len(entry["good"]) for entry in period_entries)
     anxiety_count = sum(len(entry["anxiety"]) for entry in period_entries)
     goals_count = sum(len(entry["goals"]) for entry in period_entries)
-    good_examples = collect_answers(period_entries, "good")
-    anxiety_examples = collect_answers(period_entries, "anxiety")
-    goals_examples = collect_answers(period_entries, "goals")
+    good_themes, good_unmatched = analyze_themes(period_entries, "good")
+    anxiety_themes, anxiety_unmatched = analyze_themes(period_entries, "anxiety")
+    goals_themes, goals_unmatched = analyze_themes(period_entries, "goals")
 
     next_milestone = next_analytics_milestone(entries_count)
     next_line = ""
@@ -453,15 +551,16 @@ def build_analytics_message(user_id, milestone=None):
         f"Самый сложный день: {low_entry['date'].strftime('%d.%m')} "
         f"({low_entry['score']}/10)\n\n"
         "Что связано с хорошим\n"
-        f"😊 {build_reflection('good', good_examples)}\n\n"
+        f"😊 {build_reflection('good', good_themes, good_unmatched)}\n\n"
         "Что забирает силы\n"
-        f"😟 {build_reflection('anxiety', anxiety_examples)}\n\n"
+        f"😟 {build_reflection('anxiety', anxiety_themes, anxiety_unmatched)}\n\n"
         "Где есть движение\n"
-        f"🎯 {build_reflection('goals', goals_examples)}\n\n"
-        "За период ты заметила:\n"
+        f"🎯 {build_reflection('goals', goals_themes, goals_unmatched)}\n\n"
+        "За период отмечено:\n"
         f"😊 хорошего: {good_count}\n"
         f"😟 тревог: {anxiety_count}\n"
         f"🎯 шагов к целям: {goals_count}"
+        f"{chart_availability_line(entries_count)}"
         f"{next_line}"
     )
 
@@ -470,6 +569,9 @@ def build_period_stats(entries, entries_count, milestone):
     scores = [entry["score"] for entry in entries]
     best_entry = max(entries, key=lambda entry: entry["score"])
     low_entry = min(entries, key=lambda entry: entry["score"])
+    good_themes, _ = analyze_themes(entries, "good")
+    anxiety_themes, _ = analyze_themes(entries, "anxiety")
+    goals_themes, _ = analyze_themes(entries, "goals")
 
     return {
         "completed_days_total": entries_count,
@@ -492,6 +594,11 @@ def build_period_stats(entries, entries_count, milestone):
             "good": top_words(entries, "good"),
             "anxiety": top_words(entries, "anxiety"),
             "goals": top_words(entries, "goals"),
+        },
+        "themes": {
+            "good": good_themes,
+            "anxiety": anxiety_themes,
+            "goals": goals_themes,
         },
     }
 
@@ -528,6 +635,7 @@ def build_ai_prompt(entries, entries_count, milestone):
         "- Если данных мало, формулируй как гипотезы: 'похоже', 'может быть'.\n"
         "- Избегай канцелярита и общих фраз вроде 'продолжай в том же духе'.\n"
         "- Не используй Markdown-таблицы.\n"
+        "- Если в данных меньше 7 завершенных дней, не обещай график в тексте.\n"
         "- Длина: до 2200 символов.\n\n"
         "Структура ответа:\n"
         "1. Заголовок с названием периода.\n"
@@ -581,6 +689,8 @@ async def build_openai_analytics_message(user_id, milestone=None):
     next_milestone = next_analytics_milestone(entries_count)
     if next_milestone:
         text += f"\n\nСледующая аналитика откроется на {next_milestone} днях."
+
+    text += chart_availability_line(entries_count)
 
     return text
 
@@ -841,7 +951,7 @@ async def handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif current_step == "anxiety":
             await query.message.reply_text("😟 Что ещё тревожило или расстраивало?")
         elif current_step == "goals":
-            await query.message.reply_text("🎯 Что ещё сделала для важных целей?")
+            await query.message.reply_text("🎯 Что ещё сделал(а) для важных целей?")
         return
 
     if action == "next":
@@ -858,7 +968,7 @@ async def handle_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if current_step == "anxiety":
             state["step"] = "goals"
             set_user_state(user_id, state)
-            await query.message.reply_text("🎯 Что сегодня сделала для важных целей?")
+            await query.message.reply_text("🎯 Что сегодня сделал(а) для важных целей?")
             return
 
         if current_step == "goals":
@@ -903,11 +1013,11 @@ async def handle_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✨ Первая запись сохранена\n\n"
         "Это первая точка на твоей карте радости 🌱\n\n"
         "Каждый день состоит из сотен событий, но мозг чаще запоминает проблемы.\n\n"
-        "Сегодня ты заметила:\n\n"
+        "В сегодняшней записи есть:\n\n"
         f"😊 {len(data['good'])} хороших события\n"
         f"🎯 {len(data['goals'])} шага к важным целям\n\n"
-        "Возвращайся завтра и мы начнём находить закономерности "
-        "и понимать, что делает твои дни счастливее. ✨"
+        "Возвращайся завтра, и мы начнём находить закономерности "
+        "и понимать, что делает твои дни легче и счастливее. ✨"
     )
 
     await query.message.reply_text(summary, reply_markup=final_keyboard())
